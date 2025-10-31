@@ -91,6 +91,160 @@ The following default values of `opts` can be overwritten:
 }
 ```
 
+## Signaling Server Adapters
+
+y-webrtc now supports custom signaling server adapters, allowing you to use different signaling mechanisms beyond the default WebSocket connection. This provides flexibility to integrate with various real-time communication platforms.
+
+### Built-in Adapters
+
+#### DefaultSignalingAdapter (WebSocket)
+
+The default adapter uses WebSocket connections to the y-webrtc signaling server. This is the default behavior and is used when you pass URL strings to the `signaling` option.
+
+```js
+import { WebrtcProvider } from 'y-webrtc'
+
+// These are equivalent:
+const provider1 = new WebrtcProvider('room-name', ydoc, {
+  signaling: ['ws://localhost:4444']
+})
+```
+
+#### LaravelEchoAdapter
+
+The Laravel Echo adapter allows you to use Laravel's broadcasting system as the signaling mechanism. This is useful if you're already using Laravel Echo in your application.
+
+```js
+import { WebrtcProvider, LaravelEchoAdapter } from 'y-webrtc'
+import Echo from 'laravel-echo'
+import Pusher from 'pusher-js'
+
+// Setup Laravel Echo instance
+window.Pusher = Pusher
+const echo = new Echo({
+  broadcaster: 'pusher',
+  key: 'your-pusher-key',
+  cluster: 'your-cluster',
+  forceTLS: true
+})
+
+// Create adapter
+const echoAdapter = new LaravelEchoAdapter(echo)
+
+// Use with WebrtcProvider
+const provider = new WebrtcProvider('room-name', ydoc, {
+  signaling: [echoAdapter]
+})
+```
+
+**Note:** When using Laravel Echo adapter:
+- The adapter uses private channels named `private-y-webrtc.{room-name}`
+- Signaling messages are sent using Laravel Echo's `whisper` feature
+- Make sure your Laravel backend is configured to authorize these channels
+
+### Mixing Adapters
+
+You can mix different signaling adapters (or multiple instances of the same adapter type) to connect through multiple channels:
+
+```js
+import { WebrtcProvider, LaravelEchoAdapter } from 'y-webrtc'
+
+const echoAdapter = new LaravelEchoAdapter(echo)
+
+const provider = new WebrtcProvider('room-name', ydoc, {
+  signaling: [
+    'wss://signaling.yjs.dev',  // Default WebSocket adapter
+    echoAdapter                  // Laravel Echo adapter
+  ]
+})
+```
+
+### Creating Custom Adapters
+
+You can create your own signaling adapter by extending the `SignalingAdapter` base class:
+
+```js
+import { SignalingAdapter } from 'y-webrtc'
+
+class MyCustomAdapter extends SignalingAdapter {
+  constructor (config) {
+    super()
+    this.config = config
+    this.channels = new Map()
+  }
+
+  connect (url) {
+    // Initialize your connection
+    this.connected = true
+
+    // Emit 'connect' event when ready
+    this.emit('connect', [])
+  }
+
+  disconnect () {
+    // Clean up connections
+    this.connected = false
+    this.emit('disconnect', [])
+  }
+
+  subscribe (topics) {
+    // Subscribe to room topics
+    topics.forEach(topic => {
+      // Your subscription logic here
+      // ...
+    })
+  }
+
+  unsubscribe (topics) {
+    // Unsubscribe from room topics
+    topics.forEach(topic => {
+      // Your unsubscription logic here
+      // ...
+    })
+  }
+
+  publish (topic, data) {
+    // Publish signaling messages to a topic
+    // Your publish logic here
+    // ...
+  }
+
+  destroy () {
+    this.disconnect()
+    super.destroy()
+  }
+}
+
+// Use your custom adapter
+const customAdapter = new MyCustomAdapter({ /* config */ })
+const provider = new WebrtcProvider('room-name', ydoc, {
+  signaling: [customAdapter]
+})
+```
+
+**Important:** When receiving messages from your signaling mechanism, emit them using:
+
+```js
+this.emit('message', [{ topic: 'room-name', data: messageData }])
+```
+
+### Adapter API
+
+All adapters must implement the following interface:
+
+- `connect(url: string)` - Connect to the signaling server
+- `disconnect()` - Disconnect from the signaling server
+- `subscribe(topics: string[])` - Subscribe to room topics
+- `unsubscribe(topics: string[])` - Unsubscribe from room topics
+- `publish(topic: string, data: any)` - Publish a message to a topic
+- `destroy()` - Clean up and destroy the adapter
+
+Adapters emit the following events:
+
+- `connect` - Emitted when connection is established
+- `disconnect` - Emitted when connection is lost
+- `message` - Emitted when a message is received: `{ topic: string, data: any }`
+
 ## Logging
 
 `y-webrtc` uses the `lib0/logging.js` logging library. By default this library disables logging. You can enable it by specifying the `log` environment / localStorage variable:

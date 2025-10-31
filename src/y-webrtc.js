@@ -19,6 +19,7 @@ import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 
 import * as cryptoutils from './crypto.js'
+import { createSignalingAdapter } from './signaling-adapters.js'
 
 const log = logging.createModuleLogger('y-webrtc')
 
@@ -473,95 +474,164 @@ const publishSignalingMessage = (conn, room, data) => {
   }
 }
 
-export class SignalingConn extends ws.WebsocketClient {
-  constructor (url) {
-    super(url)
+export class SignalingConn {
+  /**
+   * @param {string | import('./signaling-adapters.js').SignalingAdapter} urlOrAdapter
+   * @param {string | import('./signaling-adapters.js').SignalingAdapter} key - Key used in the signalingConns map
+   */
+  constructor (urlOrAdapter, key) {
     /**
      * @type {Set<WebrtcProvider>}
      */
     this.providers = new Set()
-    this.on('connect', () => {
-      log(`connected (${url})`)
+
+    /**
+     * @type {import('./signaling-adapters.js').SignalingAdapter}
+     */
+    this.adapter = typeof urlOrAdapter === 'string' ? createSignalingAdapter(urlOrAdapter) : urlOrAdapter
+
+    /**
+     * @type {string}
+     */
+    this.url = typeof urlOrAdapter === 'string' ? urlOrAdapter : 'adapter'
+
+    /**
+     * @type {string | import('./signaling-adapters.js').SignalingAdapter}
+     */
+    this.key = key
+
+    /**
+     * @type {boolean}
+     */
+    this.connected = false
+
+    this.adapter.on('connect', () => {
+      this.connected = true
+      log(`connected (${this.url})`)
       const topics = Array.from(rooms.keys())
-      this.send({ type: 'subscribe', topics })
+      if (topics.length > 0) {
+        this.adapter.subscribe(topics)
+      }
       rooms.forEach(room =>
         publishSignalingMessage(this, room, { type: 'announce', from: room.peerId })
       )
     })
-    this.on('message', m => {
-      switch (m.type) {
-        case 'publish': {
-          const roomName = m.topic
-          const room = rooms.get(roomName)
-          if (room == null || typeof roomName !== 'string') {
-            return
-          }
-          const execMessage = data => {
-            const webrtcConns = room.webrtcConns
-            const peerId = room.peerId
-            if (data == null || data.from === peerId || (data.to !== undefined && data.to !== peerId) || room.bcConns.has(data.from)) {
-              // ignore messages that are not addressed to this conn, or from clients that are connected via broadcastchannel
-              return
+
+    this.adapter.on('message', m => {
+      const roomName = m.topic
+      const room = rooms.get(roomName)
+      if (room == null || typeof roomName !== 'string') {
+        return
+      }
+      const execMessage = data => {
+        const webrtcConns = room.webrtcConns
+        const peerId = room.peerId
+        if (data == null || data.from === peerId || (data.to !== undefined && data.to !== peerId) || room.bcConns.has(data.from)) {
+          // ignore messages that are not addressed to this conn, or from clients that are connected via broadcastchannel
+          return
+        }
+        const emitPeerChange = webrtcConns.has(data.from)
+          ? () => {}
+          : () =>
+            room.provider.emit('peers', [{
+              removed: [],
+              added: [data.from],
+              webrtcPeers: Array.from(room.webrtcConns.keys()),
+              bcPeers: Array.from(room.bcConns)
+            }])
+        switch (data.type) {
+          case 'announce':
+            if (webrtcConns.size < room.provider.maxConns) {
+              map.setIfUndefined(webrtcConns, data.from, () => new WebrtcConn(this, true, data.from, room))
+              emitPeerChange()
             }
-            const emitPeerChange = webrtcConns.has(data.from)
-              ? () => {}
-              : () =>
-                room.provider.emit('peers', [{
-                  removed: [],
-                  added: [data.from],
-                  webrtcPeers: Array.from(room.webrtcConns.keys()),
-                  bcPeers: Array.from(room.bcConns)
-                }])
-            switch (data.type) {
-              case 'announce':
-                if (webrtcConns.size < room.provider.maxConns) {
-                  map.setIfUndefined(webrtcConns, data.from, () => new WebrtcConn(this, true, data.from, room))
-                  emitPeerChange()
+            break
+          case 'signal':
+            if (data.signal.type === 'offer') {
+              const existingConn = webrtcConns.get(data.from)
+              if (existingConn) {
+                const remoteToken = data.token
+                const localToken = existingConn.glareToken
+                if (localToken && localToken > remoteToken) {
+                  log('offer rejected: ', data.from)
+                  return
                 }
-                break
-              case 'signal':
-                if (data.signal.type === 'offer') {
-                  const existingConn = webrtcConns.get(data.from)
-                  if (existingConn) {
-                    const remoteToken = data.token
-                    const localToken = existingConn.glareToken
-                    if (localToken && localToken > remoteToken) {
-                      log('offer rejected: ', data.from)
-                      return
-                    }
-                    // if we don't reject the offer, we will be accepting it and answering it
-                    existingConn.glareToken = undefined
-                  }
-                }
-                if (data.signal.type === 'answer') {
-                  log('offer answered by: ', data.from)
-                  const existingConn = webrtcConns.get(data.from)
-                  existingConn.glareToken = undefined
-                }
-                if (data.to === peerId) {
-                  map.setIfUndefined(webrtcConns, data.from, () => new WebrtcConn(this, false, data.from, room)).peer.signal(data.signal)
-                  emitPeerChange()
-                }
-                break
+                // if we don't reject the offer, we will be accepting it and answering it
+                existingConn.glareToken = undefined
+              }
             }
-          }
-          if (room.key) {
-            if (typeof m.data === 'string') {
-              cryptoutils.decryptJson(buffer.fromBase64(m.data), room.key).then(execMessage)
+            if (data.signal.type === 'answer') {
+              log('offer answered by: ', data.from)
+              const existingConn = webrtcConns.get(data.from)
+              existingConn.glareToken = undefined
             }
-          } else {
-            execMessage(m.data)
-          }
+            if (data.to === peerId) {
+              map.setIfUndefined(webrtcConns, data.from, () => new WebrtcConn(this, false, data.from, room)).peer.signal(data.signal)
+              emitPeerChange()
+            }
+            break
         }
       }
+      if (room.key) {
+        if (typeof m.data === 'string') {
+          cryptoutils.decryptJson(buffer.fromBase64(m.data), room.key).then(execMessage)
+        }
+      } else {
+        execMessage(m.data)
+      }
     })
-    this.on('disconnect', () => log(`disconnect (${url})`))
+
+    this.adapter.on('disconnect', () => {
+      this.connected = false
+      log(`disconnect (${this.url})`)
+    })
+
+    // Connect the adapter
+    this.adapter.connect(this.url)
+  }
+
+  /**
+   * Send a message through the adapter
+   * @param {{ type: 'subscribe' | 'unsubscribe' | 'publish', topics?: Array<string>, topic?: string, data?: any }} message
+   */
+  send (message) {
+    switch (message.type) {
+      case 'subscribe':
+        if (message.topics) {
+          this.adapter.subscribe(message.topics)
+        }
+        break
+      case 'unsubscribe':
+        if (message.topics) {
+          this.adapter.unsubscribe(message.topics)
+        }
+        break
+      case 'publish':
+        if (message.topic !== undefined) {
+          this.adapter.publish(message.topic, message.data)
+        }
+        break
+    }
+  }
+
+  /**
+   * Disconnect the adapter
+   */
+  disconnect () {
+    this.adapter.disconnect()
+  }
+
+  /**
+   * Destroy the adapter
+   */
+  destroy () {
+    this.adapter.destroy()
   }
 }
 
 /**
  * @typedef {Object} ProviderOptions
- * @property {Array<string>} [signaling]
+ * @property {Array<string | import('./signaling-adapters.js').SignalingAdapter>} [signaling]
  * @property {string} [password]
  * @property {awarenessProtocol.Awareness} [awareness]
  * @property {number} [maxConns]
@@ -659,8 +729,10 @@ export class WebrtcProvider extends ObservableV2 {
 
   connect () {
     this.shouldConnect = true
-    this.signalingUrls.forEach(url => {
-      const signalingConn = map.setIfUndefined(signalingConns, url, () => new SignalingConn(url))
+    this.signalingUrls.forEach(urlOrAdapter => {
+      // Use URL string as key for URLs, or the adapter instance itself as key
+      const key = typeof urlOrAdapter === 'string' ? urlOrAdapter : urlOrAdapter
+      const signalingConn = map.setIfUndefined(signalingConns, key, () => new SignalingConn(urlOrAdapter, key))
       this.signalingConns.push(signalingConn)
       signalingConn.providers.add(this)
     })
@@ -676,7 +748,7 @@ export class WebrtcProvider extends ObservableV2 {
       conn.providers.delete(this)
       if (conn.providers.size === 0) {
         conn.destroy()
-        signalingConns.delete(conn.url)
+        signalingConns.delete(conn.key)
       }
     })
     if (this.room) {
@@ -695,3 +767,6 @@ export class WebrtcProvider extends ObservableV2 {
     super.destroy()
   }
 }
+
+// Export adapter classes for users to create custom adapters or use built-in ones
+export { SignalingAdapter, DefaultSignalingAdapter, LaravelEchoAdapter, createSignalingAdapter } from './signaling-adapters.js'
