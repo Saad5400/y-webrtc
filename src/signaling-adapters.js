@@ -180,6 +180,14 @@ export class LaravelEchoAdapter extends SignalingAdapter {
      */
     this.channels = new Map()
     /**
+     * @type {Set<string>}
+     */
+    this.readyChannels = new Set()
+    /**
+     * @type {Map<string, Array<any>>}
+     */
+    this.messageQueue = new Map()
+    /**
      * @type {boolean}
      */
     this.shouldConnect = false
@@ -206,6 +214,8 @@ export class LaravelEchoAdapter extends SignalingAdapter {
       this.echo.leave(this._getChannelName(topic))
     })
     this.channels.clear()
+    this.readyChannels.clear()
+    this.messageQueue.clear()
     this.emit('disconnect', [])
   }
 
@@ -232,6 +242,23 @@ export class LaravelEchoAdapter extends SignalingAdapter {
       const channelName = this._getChannelName(topic)
       const channel = this.echo.private(channelName)
 
+      // Wait for subscription to be ready before allowing whispers
+      channel.subscribed(() => {
+        this.readyChannels.add(topic)
+
+        // Flush any queued messages
+        const queuedMessages = this.messageQueue.get(topic) || []
+        queuedMessages.forEach(data => {
+          channel.whisper('signaling', data)
+        })
+        this.messageQueue.delete(topic)
+      })
+
+      // Handle subscription errors
+      channel.error((error) => {
+        console.error(`LaravelEchoAdapter: Error subscribing to ${channelName}:`, error)
+      })
+
       // Listen for signaling messages
       channel.listen('.signaling', (event) => {
         this.emit('message', [{ topic, data: event.data }])
@@ -255,6 +282,8 @@ export class LaravelEchoAdapter extends SignalingAdapter {
       if (channel) {
         this.echo.leave(this._getChannelName(topic))
         this.channels.delete(topic)
+        this.readyChannels.delete(topic)
+        this.messageQueue.delete(topic)
       }
     })
   }
@@ -265,10 +294,17 @@ export class LaravelEchoAdapter extends SignalingAdapter {
    */
   publish (topic, data) {
     const channel = this.channels.get(topic)
-    if (channel) {
-      // Use whisper to send messages to other clients
-      // This doesn't go through the server's event broadcasting system
+    if (!channel) return
+
+    // Only whisper if the channel subscription is ready
+    if (this.readyChannels.has(topic)) {
       channel.whisper('signaling', data)
+    } else {
+      // Queue the message until subscription is ready
+      if (!this.messageQueue.has(topic)) {
+        this.messageQueue.set(topic, [])
+      }
+      this.messageQueue.get(topic).push(data)
     }
   }
 

@@ -141,6 +141,7 @@ const provider = new WebrtcProvider('room-name', ydoc, {
 - The adapter uses private channels named `private-y-webrtc.{room-name}`
 - Signaling messages are sent using Laravel Echo's `whisper` feature
 - Make sure your Laravel backend is configured to authorize these channels
+- The adapter automatically handles subscription timing - messages are queued until the channel is ready, preventing race conditions
 
 ### Mixing Adapters
 
