@@ -8,36 +8,109 @@ import type { Awareness } from 'y-protocols/awareness'
 import type SimplePeer from 'simple-peer'
 
 /**
+ * Hooks for signaling adapter lifecycle events
+ */
+export interface SignalingAdapterHooks {
+  /**
+   * Called before connecting to the signaling server
+   */
+  onBeforeConnect?: (url: string) => void | Promise<void>
+
+  /**
+   * Called after successfully connecting to the signaling server
+   */
+  onAfterConnect?: (url: string) => void | Promise<void>
+
+  /**
+   * Called before disconnecting from the signaling server
+   */
+  onBeforeDisconnect?: () => void | Promise<void>
+
+  /**
+   * Called after disconnecting from the signaling server
+   */
+  onAfterDisconnect?: () => void | Promise<void>
+
+  /**
+   * Called before subscribing to topics
+   */
+  onBeforeSubscribe?: (topics: string[]) => void | Promise<void>
+
+  /**
+   * Called after subscribing to topics
+   */
+  onAfterSubscribe?: (topics: string[]) => void | Promise<void>
+
+  /**
+   * Called before unsubscribing from topics
+   */
+  onBeforeUnsubscribe?: (topics: string[]) => void | Promise<void>
+
+  /**
+   * Called after unsubscribing from topics
+   */
+  onAfterUnsubscribe?: (topics: string[]) => void | Promise<void>
+
+  /**
+   * Called before publishing a message. Can modify the message by returning a new topic/data object
+   */
+  onBeforePublish?: (topic: string, data: any) => void | { topic: string; data: any } | Promise<void | { topic: string; data: any }>
+
+  /**
+   * Called after publishing a message
+   */
+  onAfterPublish?: (topic: string, data: any) => void | Promise<void>
+
+  /**
+   * Called when a message is received
+   */
+  onMessage?: (message: { topic: string; data: any }) => void
+
+  /**
+   * Called when a connection error occurs
+   */
+  onConnectError?: (error: any) => void
+
+  /**
+   * Called when a disconnection error occurs
+   */
+  onDisconnectError?: (error: any) => void
+}
+
+/**
  * Base class for signaling adapters.
  * Adapters provide different ways to connect to signaling servers.
  */
 export class SignalingAdapter {
   connected: boolean
+  hooks: SignalingAdapterHooks
+
+  constructor(hooks?: SignalingAdapterHooks)
 
   /**
    * Connect to the signaling server
    */
-  connect(url: string): void
+  connect(url: string): void | Promise<void>
 
   /**
    * Disconnect from the signaling server
    */
-  disconnect(): void
+  disconnect(): void | Promise<void>
 
   /**
    * Subscribe to topics (rooms)
    */
-  subscribe(topics: string[]): void
+  subscribe(topics: string[]): void | Promise<void>
 
   /**
    * Unsubscribe from topics (rooms)
    */
-  unsubscribe(topics: string[]): void
+  unsubscribe(topics: string[]): void | Promise<void>
 
   /**
    * Publish a message to a topic
    */
-  publish(topic: string, data: any): void
+  publish(topic: string, data: any): void | Promise<void>
 
   /**
    * Destroy the adapter and cleanup resources
@@ -63,6 +136,11 @@ export class SignalingAdapter {
    * Emit an event
    */
   emit(name: string, args: any[]): void
+
+  /**
+   * Call a hook if it exists
+   */
+  _callHook(hookName: string, ...args: any[]): Promise<any>
 }
 
 /**
@@ -72,6 +150,33 @@ export class SignalingAdapter {
 export class DefaultSignalingAdapter extends SignalingAdapter {
   ws: any | null
   url: string
+
+  constructor(hooks?: SignalingAdapterHooks)
+
+  /**
+   * Protected method that performs the actual connection
+   */
+  protected _doConnect(url: string): void
+
+  /**
+   * Protected method that handles incoming messages
+   */
+  protected _handleMessage(message: { topic: string; data: any }): void
+
+  /**
+   * Protected method that performs the actual subscription
+   */
+  protected _doSubscribe(topics: string[]): void
+
+  /**
+   * Protected method that performs the actual unsubscription
+   */
+  protected _doUnsubscribe(topics: string[]): void
+
+  /**
+   * Protected method that performs the actual publishing
+   */
+  protected _doPublish(topic: string, data: any): void
 }
 
 /**
@@ -81,29 +186,111 @@ export class DefaultSignalingAdapter extends SignalingAdapter {
 export class LaravelEchoAdapter extends SignalingAdapter {
   /**
    * @param echo - Laravel Echo instance
-   * @param channelName - The name of the channel to use for signaling
+   * @param hooks - Optional hooks for lifecycle events
    */
-  constructor(echo: any, channelName?: string)
+  constructor(echo: any, hooks?: SignalingAdapterHooks)
 
   echo: any
-  channelName: string
-  channel: any | null
+  channels: Map<string, any>
+  readyChannels: Set<string>
+  messageQueue: Map<string, any[]>
+  shouldConnect: boolean
+
+  /**
+   * Protected method to get the channel name for a topic
+   */
+  protected _getChannelName(topic: string): string
+
+  /**
+   * Protected method that handles incoming messages
+   */
+  protected _handleMessage(message: { topic: string; data: any }): void
+
+  /**
+   * Protected method that performs the actual subscription for a single topic
+   */
+  protected _doSubscribe(topic: string): void
+
+  /**
+   * Protected method that performs the actual unsubscription for a single topic
+   */
+  protected _doUnsubscribe(topic: string): void
+
+  /**
+   * Protected method that performs the actual publishing
+   */
+  protected _doPublish(topic: string, data: any): void
 }
 
 /**
  * Configuration for signaling adapters
  */
 export interface SignalingAdapterConfig {
-  type: 'default' | 'laravel-echo'
+  type: 'default' | 'echo'
   url?: string
   echo?: any
-  channelName?: string
+  hooks?: SignalingAdapterHooks
 }
 
 /**
  * Create a signaling adapter from configuration
  */
-export function createSignalingAdapter(config: SignalingAdapterConfig | string): SignalingAdapter
+export function createSignalingAdapter(config: SignalingAdapterConfig | SignalingAdapter | string): SignalingAdapter
+
+/**
+ * Hooks for WebrtcProvider lifecycle events
+ */
+export interface WebrtcProviderHooks {
+  /**
+   * Called before the provider connects
+   */
+  onBeforeConnect?: () => void | Promise<void>
+
+  /**
+   * Called after the provider connects
+   */
+  onAfterConnect?: () => void | Promise<void>
+
+  /**
+   * Called before the provider disconnects
+   */
+  onBeforeDisconnect?: () => void | Promise<void>
+
+  /**
+   * Called after the provider disconnects
+   */
+  onAfterDisconnect?: () => void | Promise<void>
+
+  /**
+   * Called when connection status changes
+   */
+  onStatusChange?: (event: StatusEvent) => void
+
+  /**
+   * Called when sync status changes
+   */
+  onSynced?: (event: SyncedEvent) => void
+
+  /**
+   * Called when peers change
+   */
+  onPeersChange?: (event: PeersEvent) => void
+
+  /**
+   * Called when the room is ready
+   */
+  onRoomReady?: (room: Room) => void
+
+  /**
+   * Called when a peer connects
+   */
+  onPeerConnect?: (peerId: string) => void
+
+  /**
+   * Called when a peer disconnects
+   */
+  onPeerDisconnect?: (peerId: string) => void
+}
 
 /**
  * Options for WebrtcProvider
@@ -142,6 +329,11 @@ export interface ProviderOptions {
    * @see https://github.com/feross/simple-peer#peer--new-peeropts
    */
   peerOpts?: SimplePeer.Options
+
+  /**
+   * Lifecycle hooks for the provider
+   */
+  hooks?: WebrtcProviderHooks
 }
 
 /**
@@ -257,6 +449,7 @@ export class WebrtcProvider {
   signalingConns: SignalingConn[]
   maxConns: number
   peerOpts: SimplePeer.Options
+  hooks: WebrtcProviderHooks
   key: Promise<CryptoKey | null>
   room: Room | null
 
@@ -273,17 +466,22 @@ export class WebrtcProvider {
   /**
    * Connect to peers
    */
-  connect(): void
+  connect(): Promise<void>
 
   /**
    * Disconnect from peers
    */
-  disconnect(): void
+  disconnect(): Promise<void>
 
   /**
    * Destroy the provider and cleanup resources
    */
   destroy(): void
+
+  /**
+   * Call a hook if it exists
+   */
+  _callHook(hookName: string, ...args: any[]): Promise<any>
 
   /**
    * Add an event listener
