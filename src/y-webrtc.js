@@ -50,7 +50,9 @@ const checkIsSynced = room => {
   })
   if ((!synced && room.synced) || (synced && !room.synced)) {
     room.synced = synced
-    room.provider.emit('synced', [{ synced }])
+    const event = { synced }
+    room.provider.emit('synced', [event])
+    room.provider._callHook('onSynced', event)
     log('synced ', logging.BOLD, room.name, logging.UNBOLD, ' with all peers')
   }
 }
@@ -104,12 +106,14 @@ const readMessage = (room, buf, syncedCallback) => {
           room.bcConns.delete(peerName)
           removed.push(peerName)
         }
-        room.provider.emit('peers', [{
+        const event = {
           added,
           removed,
           webrtcPeers: Array.from(room.webrtcConns.keys()),
           bcPeers: Array.from(room.bcConns)
-        }])
+        }
+        room.provider.emit('peers', [event])
+        room.provider._callHook('onPeersChange', event)
         broadcastBcPeerId(room)
       }
       break
@@ -208,18 +212,24 @@ export class WebrtcConn {
         encoding.writeVarUint8Array(encoder, awarenessProtocol.encodeAwarenessUpdate(awareness, Array.from(awarenessStates.keys())))
         sendWebrtcConn(this, encoder)
       }
+      // Call onPeerConnect hook
+      provider._callHook('onPeerConnect', remotePeerId)
     })
     this.peer.on('close', () => {
       this.connected = false
       this.closed = true
       if (room.webrtcConns.has(this.remotePeerId)) {
         room.webrtcConns.delete(this.remotePeerId)
-        room.provider.emit('peers', [{
+        const event = {
           removed: [this.remotePeerId],
           added: [],
           webrtcPeers: Array.from(room.webrtcConns.keys()),
           bcPeers: Array.from(room.bcConns)
-        }])
+        }
+        room.provider.emit('peers', [event])
+        room.provider._callHook('onPeersChange', event)
+        // Call onPeerDisconnect hook
+        room.provider._callHook('onPeerDisconnect', this.remotePeerId)
       }
       checkIsSynced(room)
       this.peer.destroy()
@@ -532,13 +542,16 @@ export class SignalingConn {
         }
         const emitPeerChange = webrtcConns.has(data.from)
           ? () => {}
-          : () =>
-            room.provider.emit('peers', [{
+          : () => {
+            const event = {
               removed: [],
               added: [data.from],
               webrtcPeers: Array.from(room.webrtcConns.keys()),
               bcPeers: Array.from(room.bcConns)
-            }])
+            }
+            room.provider.emit('peers', [event])
+            room.provider._callHook('onPeersChange', event)
+          }
         switch (data.type) {
           case 'announce':
             if (webrtcConns.size < room.provider.maxConns) {
@@ -630,6 +643,20 @@ export class SignalingConn {
 }
 
 /**
+ * @typedef {Object} WebrtcProviderHooks
+ * @property {function():void|Promise<void>} [onBeforeConnect] - Called before connecting
+ * @property {function():void|Promise<void>} [onAfterConnect] - Called after connecting
+ * @property {function():void|Promise<void>} [onBeforeDisconnect] - Called before disconnecting
+ * @property {function():void|Promise<void>} [onAfterDisconnect] - Called after disconnecting
+ * @property {function({connected:boolean}):void} [onStatusChange] - Called when connection status changes
+ * @property {function({synced:boolean}):void} [onSynced] - Called when sync status changes
+ * @property {function({added:Array<string>,removed:Array<string>,webrtcPeers:Array<string>,bcPeers:Array<string>}):void} [onPeersChange] - Called when peers change
+ * @property {function(Room):void} [onRoomReady] - Called when room is ready
+ * @property {function(string):void} [onPeerConnect] - Called when a peer connects
+ * @property {function(string):void} [onPeerDisconnect] - Called when a peer disconnects
+ */
+
+/**
  * @typedef {Object} ProviderOptions
  * @property {Array<string | import('./signaling-adapters.js').SignalingAdapter>} [signaling]
  * @property {string} [password]
@@ -637,15 +664,16 @@ export class SignalingConn {
  * @property {number} [maxConns]
  * @property {boolean} [filterBcConns]
  * @property {import('simple-peer').SimplePeer['config']} [peerOpts]
+ * @property {WebrtcProviderHooks} [hooks]
  */
 
 /**
  * @param {WebrtcProvider} provider
  */
 const emitStatus = provider => {
-  provider.emit('status', [{
-    connected: provider.connected
-  }])
+  const event = { connected: provider.connected }
+  provider.emit('status', [event])
+  provider._callHook('onStatusChange', event)
 }
 
 /**
@@ -673,7 +701,8 @@ export class WebrtcProvider extends ObservableV2 {
       awareness = new awarenessProtocol.Awareness(doc),
       maxConns = 20 + math.floor(random.rand() * 15), // the random factor reduces the chance that n clients form a cluster
       filterBcConns = true,
-      peerOpts = {} // simple-peer options. See https://github.com/feross/simple-peer#peer--new-peeropts
+      peerOpts = {}, // simple-peer options. See https://github.com/feross/simple-peer#peer--new-peeropts
+      hooks = {}
     } = {}
   ) {
     super()
@@ -690,6 +719,10 @@ export class WebrtcProvider extends ObservableV2 {
     this.maxConns = maxConns
     this.peerOpts = peerOpts
     /**
+     * @type {WebrtcProviderHooks}
+     */
+    this.hooks = hooks
+    /**
      * @type {PromiseLike<CryptoKey | null>}
      */
     this.key = password ? cryptoutils.deriveKey(password, roomName) : /** @type {PromiseLike<null>} */ (promise.resolve(null))
@@ -699,6 +732,7 @@ export class WebrtcProvider extends ObservableV2 {
     this.room = null
     this.key.then(key => {
       this.room = openRoom(doc, this, roomName, key)
+      this._callHook('onRoomReady', this.room)
       if (this.shouldConnect) {
         this.room.connect()
       } else {
@@ -709,6 +743,19 @@ export class WebrtcProvider extends ObservableV2 {
     this.connect()
     this.destroy = this.destroy.bind(this)
     doc.on('destroy', this.destroy)
+  }
+
+  /**
+   * Call a hook if it exists, handling both sync and async functions
+   * @param {string} hookName - Name of the hook to call
+   * @param {...any} args - Arguments to pass to the hook
+   * @returns {Promise<any>}
+   */
+  async _callHook (hookName, ...args) {
+    const hook = this.hooks[hookName]
+    if (typeof hook === 'function') {
+      return await hook(...args)
+    }
   }
 
   /**
@@ -727,7 +774,9 @@ export class WebrtcProvider extends ObservableV2 {
     return this.room !== null && this.shouldConnect
   }
 
-  connect () {
+  async connect () {
+    await this._callHook('onBeforeConnect')
+
     this.shouldConnect = true
     this.signalingUrls.forEach(urlOrAdapter => {
       // Use URL string as key for URLs, or the adapter instance itself as key
@@ -740,9 +789,13 @@ export class WebrtcProvider extends ObservableV2 {
       this.room.connect()
       emitStatus(this)
     }
+
+    await this._callHook('onAfterConnect')
   }
 
-  disconnect () {
+  async disconnect () {
+    await this._callHook('onBeforeDisconnect')
+
     this.shouldConnect = false
     this.signalingConns.forEach(conn => {
       conn.providers.delete(this)
@@ -755,6 +808,8 @@ export class WebrtcProvider extends ObservableV2 {
       this.room.disconnect()
       emitStatus(this)
     }
+
+    await this._callHook('onAfterDisconnect')
   }
 
   destroy () {
