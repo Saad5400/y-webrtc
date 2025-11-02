@@ -161,7 +161,7 @@ export class DefaultSignalingAdapter extends SignalingAdapter {
   /**
    * Protected method that handles incoming messages
    */
-  protected _handleMessage(message: { topic: string; data: any }): void
+  protected _handleMessage(message: { topic: string; data: any }): Promise<void>
 
   /**
    * Protected method that performs the actual subscription
@@ -204,12 +204,12 @@ export class LaravelEchoAdapter extends SignalingAdapter {
   /**
    * Protected method that handles incoming messages
    */
-  protected _handleMessage(message: { topic: string; data: any }): void
+  protected _handleMessage(message: { topic: string; data: any }): Promise<void>
 
   /**
    * Protected method that performs the actual subscription for a single topic
    */
-  protected _doSubscribe(topic: string): void
+  protected _doSubscribe(topic: string): Promise<void>
 
   /**
    * Protected method that performs the actual unsubscription for a single topic
@@ -477,6 +477,31 @@ export class WebrtcProvider {
    * Destroy the provider and cleanup resources
    */
   destroy(): void
+
+  /**
+   * Get all peer IDs (both WebRTC and BroadcastChannel peers)
+   */
+  getPeers(): string[]
+
+  /**
+   * Get all WebRTC peer IDs
+   */
+  getWebrtcPeers(): string[]
+
+  /**
+   * Get all BroadcastChannel peer IDs
+   */
+  getBroadcastPeers(): string[]
+
+  /**
+   * Get information about a specific WebRTC peer
+   */
+  getPeerInfo(peerId: string): { peerId: string; connected: boolean; synced: boolean } | null
+
+  /**
+   * Get detailed information about all WebRTC peers
+   */
+  getAllPeersInfo(): Array<{ peerId: string; connected: boolean; synced: boolean }>
 
   /**
    * Call a hook if it exists

@@ -754,7 +754,12 @@ export class WebrtcProvider extends ObservableV2 {
   async _callHook (hookName, ...args) {
     const hook = this.hooks[hookName]
     if (typeof hook === 'function') {
-      return await hook(...args)
+      try {
+        return await hook(...args)
+      } catch (error) {
+        console.error(`Error in hook ${hookName}:`, error)
+        throw error
+      }
     }
   }
 
@@ -810,6 +815,62 @@ export class WebrtcProvider extends ObservableV2 {
     }
 
     await this._callHook('onAfterDisconnect')
+  }
+
+  /**
+   * Get all peer IDs (both WebRTC and BroadcastChannel peers)
+   * @returns {Array<string>}
+   */
+  getPeers () {
+    if (!this.room) return []
+    return [...this.getWebrtcPeers(), ...this.getBroadcastPeers()]
+  }
+
+  /**
+   * Get all WebRTC peer IDs
+   * @returns {Array<string>}
+   */
+  getWebrtcPeers () {
+    if (!this.room) return []
+    return Array.from(this.room.webrtcConns.keys())
+  }
+
+  /**
+   * Get all BroadcastChannel peer IDs
+   * @returns {Array<string>}
+   */
+  getBroadcastPeers () {
+    if (!this.room) return []
+    return Array.from(this.room.bcConns)
+  }
+
+  /**
+   * Get information about a specific WebRTC peer
+   * @param {string} peerId - The peer ID to get info for
+   * @returns {{peerId: string, connected: boolean, synced: boolean} | null}
+   */
+  getPeerInfo (peerId) {
+    if (!this.room) return null
+    const conn = this.room.webrtcConns.get(peerId)
+    if (!conn) return null
+    return {
+      peerId: conn.remotePeerId,
+      connected: conn.connected,
+      synced: conn.synced
+    }
+  }
+
+  /**
+   * Get detailed information about all WebRTC peers
+   * @returns {Array<{peerId: string, connected: boolean, synced: boolean}>}
+   */
+  getAllPeersInfo () {
+    if (!this.room) return []
+    return Array.from(this.room.webrtcConns.values()).map(conn => ({
+      peerId: conn.remotePeerId,
+      connected: conn.connected,
+      synced: conn.synced
+    }))
   }
 
   destroy () {

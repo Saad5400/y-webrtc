@@ -55,7 +55,12 @@ export class SignalingAdapter extends Observable {
   async _callHook (hookName, ...args) {
     const hook = this.hooks[hookName]
     if (typeof hook === 'function') {
-      return await hook(...args)
+      try {
+        return await hook(...args)
+      } catch (error) {
+        console.error(`Error in hook ${hookName}:`, error)
+        throw error
+      }
     }
   }
 
@@ -183,8 +188,8 @@ export class DefaultSignalingAdapter extends SignalingAdapter {
    * @protected
    * @param {{topic: string, data: any}} message
    */
-  _handleMessage (message) {
-    this._callHook('onMessage', message)
+  async _handleMessage (message) {
+    await this._callHook('onMessage', message)
     this.emit('message', [message])
   }
 
@@ -385,8 +390,8 @@ export class LaravelEchoAdapter extends SignalingAdapter {
    * @protected
    * @param {{topic: string, data: any}} message
    */
-  _handleMessage (message) {
-    this._callHook('onMessage', message)
+  async _handleMessage (message) {
+    await this._callHook('onMessage', message)
     this.emit('message', [message])
   }
 
@@ -401,11 +406,16 @@ export class LaravelEchoAdapter extends SignalingAdapter {
       return
     }
 
+    const subscriptionPromises = []
     topics.forEach(topic => {
       if (this.channels.has(topic)) return
 
-      this._doSubscribe(topic)
+      const promise = this._doSubscribe(topic)
+      subscriptionPromises.push(promise)
     })
+
+    // Wait for all subscriptions to be ready before calling onAfterSubscribe
+    await Promise.all(subscriptionPromises)
 
     await this._callHook('onAfterSubscribe', topics)
   }
@@ -415,39 +425,46 @@ export class LaravelEchoAdapter extends SignalingAdapter {
    * Can be overridden by subclasses
    * @protected
    * @param {string} topic
+   * @returns {Promise<void>}
    */
   _doSubscribe (topic) {
-    const channelName = this._getChannelName(topic)
-    const channel = this.echo.private(channelName)
+    return new Promise((resolve, reject) => {
+      const channelName = this._getChannelName(topic)
+      const channel = this.echo.private(channelName)
 
-    // Wait for subscription to be ready before allowing whispers
-    channel.subscribed(() => {
-      this.readyChannels.add(topic)
+      // Wait for subscription to be ready before allowing whispers
+      channel.subscribed(() => {
+        this.readyChannels.add(topic)
 
-      // Flush any queued messages
-      const queuedMessages = this.messageQueue.get(topic) || []
-      queuedMessages.forEach(data => {
-        channel.whisper('signaling', data)
+        // Flush any queued messages
+        const queuedMessages = this.messageQueue.get(topic) || []
+        queuedMessages.forEach(data => {
+          channel.whisper('signaling', data)
+        })
+        this.messageQueue.delete(topic)
+
+        // Resolve the promise when subscription is ready
+        resolve()
       })
-      this.messageQueue.delete(topic)
-    })
 
-    // Handle subscription errors
-    channel.error((error) => {
-      console.error(`LaravelEchoAdapter: Error subscribing to ${channelName}:`, error)
-    })
+      // Handle subscription errors
+      channel.error((error) => {
+        console.error(`LaravelEchoAdapter: Error subscribing to ${channelName}:`, error)
+        reject(error)
+      })
 
-    // Listen for signaling messages
-    channel.listen('.signaling', (event) => {
-      this._handleMessage({ topic, data: event.data })
-    })
+      // Listen for signaling messages
+      channel.listen('.signaling', (event) => {
+        this._handleMessage({ topic, data: event.data })
+      })
 
-    // Also support whisper for peer-to-peer messages
-    channel.listenForWhisper('signaling', (event) => {
-      this._handleMessage({ topic, data: event })
-    })
+      // Also support whisper for peer-to-peer messages
+      channel.listenForWhisper('signaling', (event) => {
+        this._handleMessage({ topic, data: event })
+      })
 
-    this.channels.set(topic, channel)
+      this.channels.set(topic, channel)
+    })
   }
 
   /**
