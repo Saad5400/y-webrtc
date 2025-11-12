@@ -117,18 +117,29 @@ const reassembleChunk = (peerId, data) => {
   chunks[partIndex] = chunkData
 
   // Check if all chunks are received
-  const allReceived = chunks.every(c => c !== undefined)
-  if (!allReceived) {
+  let receivedCount = 0
+  for (let i = 0; i < totalParts; i++) {
+    if (chunks[i] !== undefined && chunks[i] !== null) {
+      receivedCount++
+    }
+  }
+  
+  if (receivedCount < totalParts) {
     return null // Still waiting for more chunks
   }
 
   // Reassemble the message
-  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+  const totalLength = chunks.reduce((sum, chunk) => {
+    return sum + (chunk ? chunk.byteLength : 0)
+  }, 0)
   const reassembled = new Uint8Array(totalLength)
   let offset = 0
-  for (const chunk of chunks) {
-    reassembled.set(chunk, offset)
-    offset += chunk.byteLength
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]
+    if (chunk && chunk.byteLength > 0) {
+      reassembled.set(chunk, offset)
+      offset += chunk.byteLength
+    }
   }
 
   // Clean up

@@ -41,6 +41,7 @@ Each chunk contains:
 - Chunks are stored in a hierarchical Map structure: `peerId -> chunkId -> chunks[]`
 - Automatic cleanup after reassembly
 - Non-chunked messages pass through unchanged
+- **Safety checks**: Explicit null/undefined checks to prevent runtime errors during reassembly
 
 ## Flow Diagram
 
@@ -58,9 +59,10 @@ Receive chunk → reassembleChunk() → {
 ## Benefits
 1. **Transparent**: No changes needed to higher-level code
 2. **Efficient**: Small messages sent without overhead
-3. **Reliable**: Proper reassembly with chunk tracking
+3. **Reliable**: Proper reassembly with chunk tracking and null-safety checks
 4. **Consistent**: Same logic for all message types (sync, awareness, etc.)
 5. **Memory Safe**: Automatic cleanup of chunk buffers
+6. **Robust**: Handles edge cases like undefined chunks and race conditions
 
 ## Testing Recommendations
 1. Test with small messages (< 10KB) - should work as before
